@@ -1,0 +1,205 @@
+---
+title: "Course Project - Practical Machine Learning"
+date: "2021/02/08"
+output:
+  html_document:
+    toc: false
+    toc_depth: 2
+    number_sections: true
+---
+
+```{r knitr Setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Executive Summary
+With the purpose of developing an accurate model to predict the manner in which someone did an exercise, the data available was split into two data sets, namely one for training and one for testing. Subsequently, several treatments were considered in the data in order to reduce potential noise, such as through the removal of predictors where data was mostly missing or empty and a Principal Component Analysis. Furthermore, due to the distinct effects that may occur to the different algorithms to be later used, both normalized and standardized versions of the training and testing data sets were considered.
+
+Following a 10-fold cross-validation approach, 5 models each were developed for the normalized and standardized training data sets on the basis of the following algorithms: i) Decision Tree (DT); ii) Random Forest (RF); iii) Gradient Boosting with trees (GB); iv) Linear Discriminant Analysis (LDA); and v) Naive Bayes (NB).
+
+The model with the highest Accuracy Ratio (considering the testing data sets) resulting from this process was the one resulting from a Random Forest when data is standardized, with a value of 98.21%. The choice of the Accuracy Ratio as the decision rule results from the characteristics of the **classe** variable (non-binary classification) and the fact that no special weighing is needed for false positives or negatives (that is, Sensitivity and Specificity are not particularly relevant in this case).
+
+## Sample Specification
+During this exercise, we are provided with two different data sets: a training data set, which comprises 19,622 observations and the outcome variable (**classe**), and a testing data set, which includes 20 observations but not the outcome variable (intended for the "Course Project Prediction Quiz"). As such, the main purpose of this section is to determine a data set for: i) training (over which the models will be tuned); and ii) testing (which will be used to evaluate the different models). This process was performed with the "caret" package by creating two distinct partitions with one of them containing 75% of the original training data.
+```{r Setup, echo=TRUE, results='hide'}
+library(caret)
+set.seed(123456)
+
+trainingOriginal <- read.csv(file = 'Data/pml-training.csv', na.strings=c("","NA")) #Also transforms empty strings into NA
+testingQuiz <- read.csv(file = 'Data/pml-testing.csv', na.strings=c("","NA")) #Also transforms empty strings into NA
+
+inTrain <- createDataPartition(y=trainingOriginal$classe, p = 0.75, list = FALSE)
+trainingRaw<-trainingOriginal[inTrain,]
+testingRaw<-trainingOriginal[-inTrain,]
+
+remove(inTrain, trainingOriginal) #Clean R environment
+```
+
+## Data Treatments
+By assessing the data, there are two variables that seem to add little value to our model, which is to predict the manner in which someone (unknown) did an exercise, namely the variables **X** (observation index) and **user_name** (name of the person). Thus, these were excluded from the data sets, and the outcome variable (**classe**) was classified as a factor.
+```{r Data treatment: Irrelevant variables, echo=TRUE, results='hide'}
+trainingAdj01 <- subset(trainingRaw, select = -c(X, user_name))
+testingAdj01 <- subset(testingRaw, select = -c(X, user_name))
+testingQuiz <- subset(testingQuiz, select = -c(X, user_name))
+
+trainingAdj01$classe <- factor(trainingAdj01$classe)
+testingAdj01$classe <- factor(testingAdj01$classe)
+
+remove(trainingRaw, testingRaw) #Clean R environment
+```
+
+Furthermore, several variables present a significant amount of missing or empty values and, hence, variables with a proportion of missing/empty values above 80% within the training data set were disregarded (these same variables were also excluded from the testing data set), since they would not add significant explanatory power to the model(s). Once this treatment was implemented, no empty or missing value for any variable was identified within the training data set.
+```{r Data treatment: Missing/Empty variables, echo=TRUE, results='hide'}
+NAValues <- sapply(trainingAdj01, function(x) sum(is.na(x)) / dim(trainingAdj01)[1])  #To see results prior to removal
+
+Adj02ColumnIndicesExcluded <- which(colMeans(is.na(trainingAdj01)) > 0.8)
+trainingAdj02 <- trainingAdj01[, which(colMeans(!is.na(trainingAdj01)) > 0.8)]
+testingAdj02 <- subset(testingAdj01, select = -Adj02ColumnIndicesExcluded)
+testingQuiz <- subset(testingQuiz, select = -Adj02ColumnIndicesExcluded)
+
+NAValues02 <- sapply(trainingAdj02, function(x) sum(is.na(x)) / dim(trainingAdj02)[1])  #To see results after removal
+
+remove(trainingAdj01, testingAdj01, Adj02ColumnIndicesExcluded, NAValues, NAValues02) #Clean R environment
+```
+
+Since some machine learning algorithms are sensitive to feature scaling, both standardization (attribute's mean becomes zero and its distribution has a unit standard deviation) and normalization (also known as Min-Max scaling) were considered, and two distinct training and testing sets were elaborated according to these methods. It should be highlighted that the training data set was firstly adjusted and the computed parameters were then also applied to the testing data sets.
+```{r Data treatment: standardization and normalization, echo=TRUE, results='hide'}
+trainingAdjStandard <- preProcess(trainingAdj02[, -58], method=c("center", "scale"))
+trainingAdj03Std <- predict(trainingAdjStandard, trainingAdj02)
+testingAdj03Std <- predict(trainingAdjStandard, testingAdj02)
+testingQuizSTD <- predict(trainingAdjStandard, testingQuiz)
+
+trainingAdjNormal <- preProcess(trainingAdj02[, -58], method=c("range"))
+trainingAdj03Nrm <- predict(trainingAdjNormal, trainingAdj02)
+testingAdj03Nrm <- predict(trainingAdjNormal, testingAdj02)
+testingQuizNRM <- predict(trainingAdjNormal, testingQuiz)
+
+remove(trainingAdj02, testingAdj02, trainingAdjNormal, trainingAdjStandard, testingQuiz)  #Clean R environment
+```
+
+Finally, in order to reduce the amount of noise from the currently available predictors (**57** in total), a Principal Component Analysis (PCA) was performed with a cutoff for the cumulative percent of variance to be retained of 95%, and near zero-variance predictors were removed.
+```{r Data treatment: PCA and NZV, echo=TRUE, results='hide'}
+trainingPCAStandard <- preProcess(trainingAdj03Std[, -58], method=c("pca", "nzv"), thresh = 0.95)
+trainingSTD <- predict(trainingPCAStandard, trainingAdj03Std)
+testingSTD <- predict(trainingPCAStandard, testingAdj03Std)
+testingQuizSTD <- predict(trainingPCAStandard, testingQuizSTD)
+
+trainingPCANormal <- preProcess(trainingAdj03Nrm[, -58], method=c("pca", "nzv"), thresh = 0.95)
+trainingNRM <- predict(trainingPCAStandard, trainingAdj03Nrm)
+testingNRM <- predict(trainingPCAStandard, testingAdj03Nrm)
+testingQuizNRM <- predict(trainingPCAStandard, testingQuizNRM)
+
+remove(trainingAdj03Std, testingAdj03Std, trainingAdj03Nrm, testingAdj03Nrm, trainingPCAStandard, trainingPCANormal)  #Clean R environment
+```
+
+In overall, the processes described above lead to a total reduction from the original 159 predictors to 28 variables. However, it is worth noting that of these 28 variables, two of them do not seem to present relevant information as a result of the PCA, namely **cvtd_timestamp** and **new_window**. As such, these two variables were removed from the data sets.
+```{r Data treatment: Irrelevant variables II, echo=TRUE, results='hide'}
+trainingSTD <- subset(trainingSTD, select = -c(cvtd_timestamp, new_window))
+testingSTD <- subset(testingSTD, select = -c(cvtd_timestamp, new_window))
+testingQuizSTD <- subset(testingQuizSTD, select = -c(cvtd_timestamp, new_window))
+
+trainingNRM <- subset(trainingNRM, select = -c(cvtd_timestamp, new_window))
+testingNRM <- subset(testingNRM, select = -c(cvtd_timestamp, new_window))
+testingQuizNRM <- subset(testingQuizNRM, select = -c(cvtd_timestamp, new_window))
+```
+
+## Model Training
+Before initiating the development of the model, a few methodological assumptions were made, namely: i) a 10-fold cross-validation approach will be performed while tuning the model; and ii) Accuracy and Kappa metrics will be used to measure and select the best models during the model development's iterations, since this is a classification issue.
+```{r Model Training: Parameter Tuning, echo=TRUE, results='hide'}
+fitControl <- trainControl(summaryFunction = defaultSummary, method = "cv", number = 10)
+```
+
+In order to select the most accurate model, several algorithms were performed over the two available training data sets (one adjusted through a standardization process, and another adjusted through a normalization process). The types of algorithms that were executed are: i ) Decision tree (DT); ii) Random Forest (RF); iii) Gradient Boosting with trees (GB); iv) Linear Discriminatory Analysis (LDA); and v) Naive Bayes (NB).
+Once all models were obtained for each training data set, the models were evaluated over the corresponding testing data set, and the model with the highest Accuracy Ratio was selected, including between both types of adjustments (i.e., standardization and normalization).
+```{r Model Training: Standardization, echo=TRUE, warning=FALSE, results='hide'}
+modelFitSTD_DT <- train(classe ~ ., method = "rpart", trControl = fitControl, data = trainingSTD)
+predictionSTD_DT <- predict(modelFitSTD_DT, newdata = trainingSTD)
+
+modelFitSTD_RF <- train(classe ~ ., method = "rf", trControl = fitControl, data = trainingSTD)
+predictionSTD_RF <- predict(modelFitSTD_RF, newdata = trainingSTD)
+
+modelFitSTD_GB <- train(classe ~ ., method = "gbm", trControl = fitControl, data = trainingSTD, verbose = FALSE)
+predictionSTD_GB <- predict(modelFitSTD_GB, newdata = trainingSTD)
+
+modelFitSTD_LDA <- train(classe ~ ., method = "lda", trControl = fitControl, data = trainingSTD)
+predictionSTD_LDA <- predict(modelFitSTD_LDA, newdata = trainingSTD)
+
+modelFitSTD_NB <- train(classe ~ ., method = "nb", trControl = fitControl, data = trainingSTD, trace = FALSE)
+predictionSTD_NB <- predict(modelFitSTD_NB, newdata = trainingSTD)
+
+remove(predictionSTD_DT, predictionSTD_RF, predictionSTD_GB, predictionSTD_LDA, predictionSTD_NB) #Clean R environment
+```
+
+```{r Model Training: Normalization, echo=TRUE, warning=FALSE, results='hide'}
+modelFitNRM_DT <- train(classe ~ ., method = "rpart", trControl = fitControl, data = trainingNRM)
+predictionNRM_DT <- predict(modelFitNRM_DT, newdata = trainingNRM)
+
+modelFitNRM_RF <- train(classe ~ ., method = "rf", trControl = fitControl, data = trainingNRM)
+predictionNRM_RF <- predict(modelFitNRM_RF, newdata = trainingNRM)
+
+modelFitNRM_GB <- train(classe ~ ., method = "gbm", trControl = fitControl, data = trainingNRM, verbose = FALSE)
+predictionNRM_GB <- predict(modelFitNRM_GB, newdata = trainingNRM)
+
+modelFitNRM_LDA <- train(classe ~ ., method = "lda", trControl = fitControl, data = trainingNRM)
+predictionNRM_LDA <- predict(modelFitNRM_LDA, newdata = trainingNRM)
+
+modelFitNRM_NB <- train(classe ~ ., method = "nb", trControl = fitControl, data = trainingNRM, trace = FALSE)
+predictionNRM_NB <- predict(modelFitNRM_NB, newdata = trainingNRM)
+
+remove(predictionNRM_DT, predictionNRM_RF, predictionNRM_GB, predictionNRM_LDA, predictionNRM_NB) #Clean R environment
+```
+
+## Model Evaluation
+As previously mentioned, the Accuracy Ratio was calculated in line with each model and data treatment (i.e., standardization vs. normalization), as presented below:
+```{r Model Evaluation: Standardization, echo=TRUE, warning=FALSE, results='hide'}
+predictions <- predict(modelFitSTD_DT, newdata=testingSTD)
+ResultSTD_DT <- confusionMatrix(predictions, testingSTD$classe)$overall[1]
+
+predictions <- predict(modelFitSTD_RF, newdata=testingSTD)
+ResultSTD_RF <- confusionMatrix(predictions, testingSTD$classe)$overall[1]
+
+predictions <- predict(modelFitSTD_GB, newdata=testingSTD)
+ResultSTD_GB <- confusionMatrix(predictions, testingSTD$classe)$overall[1]
+
+predictions <- predict(modelFitSTD_LDA, newdata=testingSTD)
+ResultSTD_LDA <- confusionMatrix(predictions, testingSTD$classe)$overall[1]
+
+predictions <- predict(modelFitSTD_NB, newdata=testingSTD)
+ResultSTD_NB <- confusionMatrix(predictions, testingSTD$classe)$overall[1]
+
+ResultSTD <- data.frame(ResultSTD_DT, ResultSTD_RF, ResultSTD_GB, ResultSTD_LDA, ResultSTD_NB)
+
+remove(predictions, ResultSTD_DT, ResultSTD_RF, ResultSTD_GB, ResultSTD_LDA, ResultSTD_NB) #Clean R environment
+```
+
+```{r Model Evaluation: Normalization, echo=TRUE, warning=FALSE, results='hide'}
+predictions <- predict(modelFitNRM_DT, newdata=testingNRM)
+ResultNRM_DT <- confusionMatrix(predictions, testingNRM$classe)$overall[1]
+
+predictions <- predict(modelFitNRM_RF, newdata=testingNRM)
+ResultNRM_RF <- confusionMatrix(predictions, testingNRM$classe)$overall[1]
+
+predictions <- predict(modelFitNRM_GB, newdata=testingNRM)
+ResultNRM_GB <- confusionMatrix(predictions, testingNRM$classe)$overall[1]
+
+predictions <- predict(modelFitNRM_LDA, newdata=testingNRM)
+ResultNRM_LDA <- confusionMatrix(predictions, testingNRM$classe)$overall[1]
+
+predictions <- predict(modelFitNRM_NB, newdata=testingNRM)
+ResultNRM_NB <- confusionMatrix(predictions, testingNRM$classe)$overall[1]
+
+ResultNRM <- data.frame(ResultNRM_DT, ResultNRM_RF, ResultNRM_GB, ResultNRM_LDA, ResultNRM_NB)
+
+remove(predictions, ResultNRM_DT, ResultNRM_RF, ResultNRM_GB, ResultNRM_LDA, ResultNRM_NB) #Clean R environment
+```
+
+```{r Model Evaluation: Results, echo=TRUE}
+ResultSTDTranspose <- data.frame(t(ResultSTD))
+ResultNRMTranspose <- data.frame(t(ResultNRM))
+ResultAgg <- round(data.frame(ResultSTDTranspose, ResultNRMTranspose) * 100, 2)
+rownames(ResultAgg) <- c("DT", "RF", "GB", "LDA", "NB")
+colnames(ResultAgg) <- c("STD", "NRM")
+remove(ResultSTDTranspose, ResultNRMTranspose, ResultSTD, ResultNRM)  #Clean R environment
+ResultAgg
+```
+As it can be observed, the model with the highest Accuracy Ratio was a Random Forest when data is standardized (98.21%).
